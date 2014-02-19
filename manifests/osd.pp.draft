@@ -21,6 +21,8 @@ define ceph::osd (
   $journal = undef,
   $cluster = undef,
   $authentication_type = 'cephx',
+  $key = undef,
+  $keyring  = undef,
   ) {
 
     $data = $name
@@ -32,36 +34,72 @@ define ceph::osd (
     if $ensure == present {
       $ceph_mkfs = "ceph-osd-mkfs-${name}"
 
-      # ceph-disk: prepare should be idempotent http://tracker.ceph.com/issues/7475
+      if $authentication_type == 'cephx' {
+        if $key or $keyring {
+          if $key and $keyring {
+            fail("key (set to ${key}) and keyring (set to ${keyring}) are mutually exclusive")
+          }
+          if $key {
+            $keyring_path = "/tmp/ceph-osd-keyring"
+
+            file { $keyring_path:
+              mode        => '0444',
+              content     => "[client.bootstrap-osd]\n\tkey = ${key}\n",
+            }
+
+            File[$keyring_path] -> Exec[$ceph_mkfs]
+
+          } else {
+            $keyring_path = $keyring
+          }
+        }
+      } else {
+        $keyring_path = '/dev/null'
+      }
+
+      if $keyring_path {
+        $activate_key_option = "--activate-key ${keyring_path}"
+      }
+
       exec { $ceph_mkfs:
         command   => "/bin/true # comment to satisfy puppet syntax requirements
 set -ex
-if ! ceph-disk list | grep ' *${data}.*ceph data' ; then
-  ceph-disk prepare ${cluster_option} \
-     $data \
-     $journal
+ceph-disk prepare ${cluster_option} \
+   $data \
+   $journal
+if [ -d ${data} ] ; then
+  ceph-disk activate ${activate_key_option} ${data}
 fi
 ",
         logoutput => true,
       }
 
     } else {
-
-      # ceph-disk: support osd removal http://tracker.ceph.com/issues/7454
+      
       exec { "remove-osd-${name}":
         command   => "/bin/true  # comment to satisfy puppet syntax requirements
 set -ex
+if [ -r \"${data}/whoami\" ] ; then
+  id=$(cat ${data}/whoami)
+  is_device=false
+fi
 if [ -z \"\$id\" ] ; then
   id=\$(ceph-disk list | grep ' *${data}.*ceph data' | sed -e 's/.*osd.\\([0-9][0-9]*\\).*/\\1/')
+  is_device=true
 fi
 if [ -z \"\$id\" ] ; then
   id=\$(ceph-disk list | grep ' *${data}.*mounted on' | sed -e 's/.*osd.\\([0-9][0-9]*\\)\$/\\1/')
+  is_device=true
 fi
 if [ \"\$id\" ] ; then
   stop ceph-osd id=\$id || true
   ceph ${cluster_option} osd rm \$id
   ceph auth del osd.\$id
-  umount /var/lib/ceph/osd/ceph-\$id || true
+  if \$is_device ; then
+    umount /var/lib/ceph/osd/ceph-\$id || true
+  else
+    rm /var/lib/ceph/osd/ceph-\$id
+  fi
 fi
 ",
         logoutput => true,
