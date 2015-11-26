@@ -78,10 +78,10 @@ define ceph::rgw (
     "client.${name}/user":               value => $user;
   }
 
-  package { $pkg_radosgw:
+  ensure_resource('package', $pkg_radosgw, {
     ensure => installed,
     tag    => 'ceph',
-  }
+  })
 
   # Data directory for radosgw
   file { '/var/lib/ceph/radosgw': # missing in redhat pkg
